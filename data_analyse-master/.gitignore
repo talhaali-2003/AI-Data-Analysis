@@ -1,0 +1,9 @@
+venv/
+myenv
+.venv
+.vscode
+myenv/
+__pycache__
+.env
+app.log
+.env
