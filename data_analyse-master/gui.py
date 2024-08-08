@@ -37,7 +37,7 @@ es_port = int(os.getenv('ES_PORT', 9250))
 es_scheme = os.getenv('SCHEME', 'https')
 index_name = os.getenv('INDEX', '')
 user = os.getenv('username')
-model_name = os.getenv('MODEL_NAME', 'gpt-35-turbo-16k')
+model_name = os.getenv('MODEL_NAME', 'mistral.mixtral-8x7b-instruct-v0:1')
 password = os.getenv('pass')
 
 

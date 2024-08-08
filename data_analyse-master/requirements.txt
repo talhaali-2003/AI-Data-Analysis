@@ -21,7 +21,5 @@ tesseract
 pinecone-client
 pillow_heif
 numpy==1.23.5
-langchain-pinecone
-chromadb
-pikepdf
-pypdf
+
+
