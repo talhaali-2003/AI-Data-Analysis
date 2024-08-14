@@ -1,18 +1,16 @@
 import streamlit as st
 import tempfile
-import random
-from langchain.prompts.prompt import PromptTemplate
-from PIL import Image
-from get_elastic import get_metrics, get_process, get_hostnames
+import pandas as pd
 import os
 import plotly.express as px
-import io
 import time
-import pandas as pd
-import matplotlib.pyplot as plt
-import tempfile
 from datetime import datetime
-from contextlib import redirect_stdout
+from langchain_experimental.agents.agent_toolkits import create_pandas_dataframe_agent
+from langchain_experimental.tools.python.tool import PythonAstREPLTool
+from langchain.prompts import PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+import logging
+import warnings
 from langchain_experimental.agents.agent_toolkits import create_pandas_dataframe_agent
 from langchain_community.callbacks import get_openai_callback
 from langchain_openai import AzureChatOpenAI
@@ -22,21 +20,9 @@ from langchain.chat_models import ChatOpenAI
 from langchain.schema import (
     HumanMessage,
 )
-
 from langchain.agents.agent_types import AgentType
-from langchain_community.utilities import WikipediaAPIWrapper
-from langchain_experimental.tools.python.tool import PythonAstREPLTool
-from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain, SequentialChain
-from langchain_core.output_parsers import StrOutputParser
-from streamlit_feedback import streamlit_feedback
-import logging
-import warnings
-import sqlite3
-warnings.filterwarnings("ignore")
-st.set_option('deprecation.showPyplotGlobalUse', False)  
+
 from dotenv import load_dotenv
-from langchain_community.llms import HuggingFaceHub
 
 load_dotenv()
 python_repl_ast = PythonAstREPLTool()
@@ -73,67 +59,6 @@ logging.info("Application started")
 ########################### ENVIRONMENT ################
 
 openai_api_key = os.getenv('OPENAI_API_KEY')
-########################### FEEDBACK #############################
-
-
-def initialize_db(db_path='feedback.db'):
-    conn = sqlite3.connect(db_path)
-    c = conn.cursor()
-    # Create table
-    c.execute('''CREATE TABLE IF NOT EXISTS user_feedback
-                 (id INTEGER PRIMARY KEY,
-                  user_question TEXT,
-                  user_feedback INTEGER,
-                  timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)''')
-    # Save (commit) the changes and close the connection
-    conn.commit()
-    conn.close()
-
-def store_feedback(user_question, user_feedback, db_path='feedback.db'):
-    conn = sqlite3.connect(db_path)
-    c = conn.cursor()
-    # Insert a row of data
-    c.execute("INSERT INTO user_feedback (user_question, user_feedback) VALUES (?, ?)",
-              (user_question, user_feedback))
-    # Save (commit) the changes
-    conn.commit()
-    # Close the connection
-    conn.close()
-
-def get_all_feedback(db_path='feedback.db'):
-    conn = sqlite3.connect(db_path)
-    c = conn.cursor()
-    c.execute("SELECT * FROM user_feedback")
-    all_feedback = c.fetchall()
-    conn.close()
-    return all_feedback
-
-def aggregate_feedback(db_path='feedback.db'):
-    conn = sqlite3.connect(db_path)
-    c = conn.cursor()
-    
-    # SQL query to aggregate positive feedback by user_question and order by count of positive feedback in desc order
-    query = """
-    SELECT user_question, SUM(user_feedback) AS positive_feedback_count
-    FROM user_feedback
-    GROUP BY user_question
-    ORDER BY positive_feedback_count DESC
-    """
-    
-    c.execute(query)
-    results = c.fetchall()
-    conn.close()
-    
-    return results
-
-initialize_db()
-
-#store_feedback('How to reset my password?', 1)
-questions_list=["Choose an option","Custom Question ..."]
-aggregated_feedback = aggregate_feedback()
-for question, positive_count in aggregated_feedback:
-    questions_list.append(question)
-
 
 #############################
 
@@ -175,9 +100,6 @@ result = {
 }
 
 
-
-
-
 ######## COMMMON FUNCTIONS ############
 
 
@@ -201,15 +123,6 @@ def get_openai_llm(model_name='gpt-3.5-turbo', temperature=0.3):
     )
     return llm
 
-def show_cost(input):
-    st.session_state['total_cost'] = st.session_state['total_cost'] + result['Total Cost (USD)']
-    st.sidebar.subheader("Cost Summary")
-    st.sidebar.caption(f"Total usage Cost (USD): {st.session_state['total_cost']}")
-    st.sidebar.caption(f"Request Cost (USD): {result['Total Cost (USD)']}")
-    st.sidebar.caption(f"Prompt Tokens: {result['Prompt Tokens']}")
-    st.sidebar.caption(f"Completion Tokens: {result['Completion Tokens']}")
-    st.sidebar.caption(f"Tokens Used: {result['Tokens Used']}")
-    return
 
 def classify_intent_with_llm(llm, user_query):
     try:
@@ -239,47 +152,6 @@ def classify_intent_with_llm(llm, user_query):
         logging.error(f"Error classifying intent: {e}")
         return f"Error classifying intent: {e}"
 
-
-    
-@st.cache_resource
-def wiki(prompt):
-    wiki_research = WikipediaAPIWrapper().run(prompt)
-    return wiki_research
-
-@st.cache_data
-def prompt_templates():
-    data_problem_template = PromptTemplate(
-        input_variables=['business_problem'],
-        template='Convert the following business problem into a data science problem: {business_problem}.'
-    )
-    model_selection_template = PromptTemplate(
-        input_variables=['data_problem', 'wikipedia_research'],
-        template='Give a list (only the name) of machine learning algorithms that are suitable to solve this problem: {data_problem}, while using this wikipedia research: {wikipedia_research}.'
-    )
-    return data_problem_template, model_selection_template
-
-@st.cache_resource
-def chains():
-    data_problem_chain = LLMChain(llm=llm, prompt=prompt_templates()[0], verbose=True, output_key='data_problem')
-    model_selection_chain = LLMChain(llm=llm, prompt=prompt_templates()[1], verbose=True, output_key='model_selection')
-    sequential_chain = SequentialChain(chains=[data_problem_chain, model_selection_chain], input_variables=['business_problem', 'wikipedia_research'], output_variables=['data_problem', 'model_selection'], verbose=True)
-    return sequential_chain
-
-@st.cache_data
-def chains_output(prompt, wiki_research):
-    my_chain = chains()
-    my_chain_output = my_chain({'business_problem': prompt, 'wikipedia_research': wiki_research})
-    my_data_problem = my_chain_output["data_problem"]
-    my_model_selection = my_chain_output["model_selection"]
-    return my_data_problem, my_model_selection
-
-@st.cache_data
-def list_to_selectbox(my_model_selection_input):
-    algorithm_lines = my_model_selection_input.split('\n')
-    algorithms = [algorithm.split(':')[-1].split('.')[-1].strip() for algorithm in algorithm_lines if algorithm.strip()]
-    algorithms.insert(0, "Select Algorithm")
-    formatted_list_output = [f"{algorithm}" for algorithm in algorithms if algorithm]
-    return formatted_list_output
 
 def clicked(button):
     st.session_state.clicked[button]= True
@@ -418,70 +290,6 @@ def merge_metrics_process(df_filtered_process, df_metrics_filtered):
 
     return df_global
 
-def execute_python_code(code):
-    """
-    Executes Python code safely, capturing both plot outputs and textual outputs.
-
-    Parameters:
-    - code (str): The Python code to execute.
-
-    Returns:
-    - tuple: A tuple containing the textual output and an optional BytesIO object for the plot output.
-    """
-    # sanitize the code
-    if not is_code_safe(code):
-        return "Unsafe code detected. Execution aborted.", None
-
-    try:
-    
-        local_namespace = {}
-        stdout_buf = io.StringIO()
-        with redirect_stdout(stdout_buf):
-            exec(code, {"plt": plt}, local_namespace)
-        text_output = stdout_buf.getvalue()
-
-        # Check for plot
-        if plt.get_fignums():
-            buf = io.BytesIO()
-            plt.savefig(buf, format='png')
-            plt.close()
-            buf.seek(0)
-            plot_output = buf
-        else:
-            plot_output = None
-
-        return text_output, plot_output
-
-    except SyntaxError as e:
-        error = f"Syntax error in the provided code: {e}"
-        return (error, None)    
-    except Exception as e:
-        return (f"An error occurred during code execution: {e}", None)
-    
-def render_llm_response2(response):
-
-    sections = response.split("```")
-
-    for i, section in enumerate(sections, start=1):
-        logging.debug(f"Section {i}: {section}\n")
-      
-        if section.startswith("python\n"):
-            section = section.strip("```")
-            section = section.strip("python")
-
-            text_output, plot_output = execute_python_code(section)
-            if plot_output:
-                logging.debug("Render image")
-                plot_area = st.empty()
-                plot_area.pyplot(exec(section))
-            if text_output:
-                logging.debug("Render text")
-                st.code(text_output)
-
-        else:
-            st.code(section)
-            logging.debug("Render code")
-
 def clean_llm_response(response):
     start_idx = response.find("```python")
     end_idx = response.rfind("```")
@@ -504,9 +312,6 @@ def clean_llm_response(response):
     cleaned_code = "\n".join(code_lines)
     return cleaned_code
 
-
-
-
 def clean_llm_response_plot(response):
     start_idx = response.find("```python")
     end_idx = response.rfind("```")
@@ -515,34 +320,12 @@ def clean_llm_response_plot(response):
         response = response.replace("\n", "\n")
     return response
 
-def query_llm_for_validation(query, llm):
-    validation_prompt = f"""
-    Given the following user query: '{query}', check if the query is too complex. 
-    Ensure all column names in the query exist in the dataframe and that the query can be simplified. 
-    If the query is too complex, return: "Query is too complex, prompt the user to try again". 
-    If the query can be simplified, return a simplified version of the query. 
-    Remember their will be plotting questions and data questions, make sure that neither are too complex!
-    Your response should be the simplified query or the message if the query is too complex.
-    """
-    validation_response = llm(validation_prompt)
-    return validation_response
-
 def run_agent_data(query, llm, df):
     history = st.session_state.get('conversation_history', [])
     intent = classify_intent_with_llm(llm, query)
     st.write(f"Intent : {intent}")
     logging.info(f"Question: {query} Intent : {intent}")
     query = query + " Use the tool python_repl_ast!"
-
-    # pandas_agent = create_pandas_dataframe_agent(
-    #     llm,
-    #     df,
-    #     tools=[PythonAstREPLTool()],
-    #     verbose=True,
-    #     agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-    #     agent_executor_kwargs={"handle_parsing_errors": True},
-    #     max_iterations=10
-    # )
 
     try:
         prompt = f"""
@@ -570,6 +353,7 @@ def run_agent_data(query, llm, df):
         ```
 
         It should look like that so a helper function can clean your final answer and run the code!
+        Do not include the Action Input or Action or Output in your final answer, ONLY THE CODE NOTHING ELSE, your output should always be the code show in the example above!
         Also Remember your final answer should always be CODE NEVER LEAVE COMMENTS IN THE CODE!
         """
         response = llm([HumanMessage(content=prompt)])
@@ -655,6 +439,7 @@ def run_agent_plot(query, llm, df):
 
         MAKE SURE TO SPELL python_repl_ast CORRECTLY THEIR SHOULD BE NO BACK SLASHES OR FORWARD SLASHES IN IT!
         DONT FORGET, if you have code in your final answer ONLY DISPLAY THE CODE NO COMMENTS!
+        Do not include the Action Input or Action or Output in your final answer, ONLY THE CODE NOTHING ELSE, your output should always be the code show in the example above!
         Also if you see any user querieis for global_ram the column name is misspelled it is gloal_ram!
         """
         output = pandas_agent.invoke(prompt)
@@ -675,60 +460,12 @@ def run_agent_plot(query, llm, df):
         st.error(f"Exception during pandas agent run: {e}")
         return {"output": f"Error: {e}"}
 
-def format_response( res):
-    # Remove the load_csv from the answer if it exists
-    csv_line = res.find("read_csv")
-    if csv_line > 0:
-        return_before_csv_line = res[0:csv_line].rfind("\n")
-        if return_before_csv_line == -1:
-            # The read_csv line is the first line so there is nothing to need before it
-            res_before = ""
-        else:
-            res_before = res[0:return_before_csv_line]
-        res_after = res[csv_line:]
-        return_after_csv_line = res_after.find("\n")
-        if return_after_csv_line == -1:
-            # The read_csv is the last line
-            res_after = ""
-        else:
-            res_after = res_after[return_after_csv_line:]
-        res = res_before + res_after
-    return res
-
-@st.cache_data
-def python_solution(my_data_problem, selected_algorithm, user_csv):
-    solution = pandas_agent.invoke(
-        f"Write a Python script to solve this: {my_data_problem}, using this algorithm: {selected_algorithm}, using this as your dataset: {temp_file_name}."
-    )
-    return solution
-
-def is_code_safe(code):
-    # List of unsafe keywords or patterns you might want to check for
-    unsafe_patterns = ['import os', 'open(', 'subprocess', 'sys.exit', 'eval(', 'exec(']
-    for pattern in unsafe_patterns:
-        if pattern in code:
-            return False
-    return True
-
-@st.cache_data
-def run_get_process(user_question_host, start_datetime_str, end_datetime_str):
-    return get_process(user_question_host, start_datetime_str, end_datetime_str)
-
 @st.cache_data
 def get_csv(file_path):
     df = pd.read_csv(file_path)
     print(df)
     return df
 
-@st.cache_data
-def run_get_metrics(user_question_host, start_datetime_str, end_datetime_str):
-    metric = get_metrics(user_question_host, start_datetime_str, end_datetime_str)
-
-    if metrics.startswith("Error pulling metrics"):
-        st.error("An error occurred while pulling the metrics")
-        st.stop()
-    else:
-        return metric
     
 def update_conversation_history(user_query, llm_response):
     # Add the new query and response to the conversation history
@@ -777,7 +514,7 @@ st.title("AI DATA ANALYSIS", anchor=False)
 ######## MAIN PAGE ############
 
 # Tabs for Summarize and Daily Reports
-tab1, tab2 = st.tabs(["Data analyse", "Data analyse CSV"])
+tab1, tab2 = st.tabs(["Data Analysis", "Data Analysis CSV"])
 
 llm = get_openai_llm()
 
@@ -867,7 +604,7 @@ with tab1:
                         df = metrics_transformation(run_get_metrics(user_question_host, start_datetime_str, end_datetime_str))
                     else:
                         # metrics_df = metrics_transformation(run_get_metrics(user_question_host, start_datetime_str, end_datetime_str))
-                        process_df = get_csv('JeanLuc8am.csv')
+                        process_df = get_csv('TESTSERVER.csv')
                         df = process_df
 
                     st.session_state["datasets"] = df
@@ -989,8 +726,8 @@ with tab1:
                 update_progress_bar(10, "Initializing LLM connection...", progress_bar)
                 llm_response = answer_data_question(user_data_question)
                 update_progress_bar(50, "Processing your request...", progress_bar)
-                # st.write("Generated Python Code:")
-                #st.code(llm_response, language="python")
+                st.write("Generated Python Code:")
+                st.code(llm_response, language="python")
                 update_conversation_history(user_data_question, llm_response)
                 update_progress_bar(70, "Running the analysis...", progress_bar)
 
@@ -1004,10 +741,9 @@ with tab1:
                         clean_response = clean_llm_response(llm_response)
                         
                         # Debug output for clean response
-                        # st.write("Cleaned Python Code:")
-                        #st.code(clean_response, language="python")
+                        st.write("Cleaned Python Code:")
+                        st.code(clean_response, language="python")
 
-                        # Capture the output of the exec call
                         from io import StringIO
                         import sys
                         
@@ -1091,8 +827,8 @@ with tab1:
                 update_progress_bar(10, "Initializing LLM connection...", progress_bar)
                 llm_response = answer_plotting_question(user_plotting_question)
                 update_progress_bar(50, "Processing your request...", progress_bar)
-                # st.write("Generated Python Code:")
-                # st.code(llm_response, language="python")
+                st.write("Generated Python Code:")
+                st.code(llm_response, language="python")
                 update_conversation_history(user_plotting_question, llm_response)
                 if "Agent stopped due to iteration limit or time limit." in llm_response:
                     st.error(random.choice(friendly_errors))
@@ -1125,7 +861,7 @@ with tab1:
 
 ######## TAB2 ############
 
-llm = get_openai_llm
+llm = get_openai_llm()
 friendly_errors = [
     "Oops! Something went wrong with the AI. Please try again.",
     "An unexpected error occurred with the AI. Please try again.",
@@ -1435,8 +1171,8 @@ with tab2:
                     update_progress_bar(10, "Initializing LLM connection...", progress_bar)
                     llm_response = csv_answer_plotting_question(user_plotting_question)
                     update_progress_bar(50, "Processing your request...", progress_bar)
-                    # st.write("Generated Python Code:")
-                    # st.code(llm_response, language="python")
+                    st.write("Generated Python Code:")
+                    st.code(llm_response, language="python")
                     update_progress_bar(70, "Running the analysis...", progress_bar)
 
                     if "Agent stopped due to iteration limit or time limit." in llm_response:
