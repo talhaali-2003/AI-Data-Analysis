@@ -16,8 +16,12 @@ from contextlib import redirect_stdout
 from langchain_experimental.agents.agent_toolkits import create_pandas_dataframe_agent
 from langchain_community.callbacks import get_openai_callback
 from langchain_openai import AzureChatOpenAI
-import GenAIPlatformLLM
-from GenAIPlatformLLM import GenAIPlatformLLM
+from langchain.llms import OpenAI
+import openai
+from langchain.chat_models import ChatOpenAI
+from langchain.schema import (
+    HumanMessage,
+)
 
 from langchain.agents.agent_types import AgentType
 from langchain_community.utilities import WikipediaAPIWrapper
@@ -66,12 +70,9 @@ logging = setup_logger()
 
 logging.info("Application started")
 
-########################### ENVIRONMENT #############################
-# Load environment variables from .env file
-#url = os.getenv('GAI_GTW_URL')
-#key = os.getenv('GAI_GTW_API_KEY')
-#password = os.getenv('pass')
+########################### ENVIRONMENT ################
 
+openai_api_key = os.getenv('OPENAI_API_KEY')
 ########################### FEEDBACK #############################
 
 
@@ -181,30 +182,22 @@ result = {
 
 
 
-def get_GenAI_llm(model_id, model_kwargs = None):
-    ######## Config LLM  GenAI Platform ############
+def get_openai_llm(model_name='gpt-3.5-turbo', temperature=0.3):
+    """
+    Configure and return an OpenAI LLM using LangChain's OpenAI class.
 
-    if model_kwargs is None:
-        model_kwargs = {"temperature": 0.3}
+    Args:
+        model_name (str): The model name to use (e.g., 'gpt-4').
+        temperature (float): Sampling temperature.
 
-    if model_id == "openai-gpt-35-turbo-16k":
-        model_kwargs = {"temperature": 0.3, "timeout": 300}
-
-    url = os.getenv('BR_URL')
-    api_key = os.getenv('BR_KEY')
-
-
-    model_id = model_id
-    model_kwargs = model_kwargs
-
-
-    # model definition
-    llm = GenAIPlatformLLM(
-        api_key=api_key,
-        url=url,
-        provider = GenAIPlatformLLM.get_provider_by_model_id(model_id),
-        model_id=model_id,
-        model_kwargs=model_kwargs,
+    Returns:
+        OpenAI: A configured OpenAI LLM instance.
+    """
+    llm = ChatOpenAI(
+        openai_api_key=openai_api_key,
+        model=model_name,
+        temperature=temperature,
+        max_tokens=1500
     )
     return llm
 
@@ -236,14 +229,11 @@ def classify_intent_with_llm(llm, user_query):
         now let's classify the following user query : '{user_query}'.
         ANSWER:
         """
-        response = llm.invoke(prompt)
-        
-        # Ensure response is a string
-        if isinstance(response, dict):
-            response = response.get('output', '')  # Adjust this if the key is different
-
-        logging.info(f"Classified intent: {response.lower()}")
-        return response.lower().strip()
+        # Use ChatOpenAI's way of handling messages
+        response = llm([HumanMessage(content=prompt)])
+        output = response.content.strip().lower()
+        logging.info(f"Classified intent: {output}")
+        return output
         
     except Exception as e:
         logging.error(f"Error classifying intent: {e}")
@@ -516,6 +506,7 @@ def clean_llm_response(response):
 
 
 
+
 def clean_llm_response_plot(response):
     start_idx = response.find("```python")
     end_idx = response.rfind("```")
@@ -542,20 +533,16 @@ def run_agent_data(query, llm, df):
     st.write(f"Intent : {intent}")
     logging.info(f"Question: {query} Intent : {intent}")
     query = query + " Use the tool python_repl_ast!"
-    # validation_response = query_llm_for_validation(query, llm)
 
-    # if "Query is too complex" in validation_response:
-    #     return {"output": validation_response}
-
-    pandas_agent = create_pandas_dataframe_agent(
-        llm,
-        df,
-        tools=[PythonAstREPLTool()],
-        verbose=True,
-        agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-        agent_executor_kwargs={"handle_parsing_errors": True},
-        max_iterations=10
-    )
+    # pandas_agent = create_pandas_dataframe_agent(
+    #     llm,
+    #     df,
+    #     tools=[PythonAstREPLTool()],
+    #     verbose=True,
+    #     agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+    #     agent_executor_kwargs={"handle_parsing_errors": True},
+    #     max_iterations=10
+    # )
 
     try:
         prompt = f"""
@@ -585,21 +572,21 @@ def run_agent_data(query, llm, df):
         It should look like that so a helper function can clean your final answer and run the code!
         Also Remember your final answer should always be CODE NEVER LEAVE COMMENTS IN THE CODE!
         """
-        output = pandas_agent.invoke(prompt)
+        response = llm([HumanMessage(content=prompt)])
+        output = response.content.strip()
         logging.info(output)
         
-        if isinstance(output, dict) and "output" in output:
-            response = output["output"]
-            response = response.replace('\\', '').replace('/', '')
-            return {"output": response}
+        if output:
+            output = output.replace('\\', '').replace('/', '')
+            return {"output": output}
         else:
-            logging.error(f"Unexpected output format: {output}")
-            st.error("An error occurred: Unexpected output format")
-            return {"output": "Unexpected output format"}
+            logging.error("Empty output from LLM")
+            st.error("An error occurred: Empty output from LLM")
+            return {"output": "Empty output from LLM"}
 
     except Exception as e:
-        logging.error(f"Exception during pandas agent run: {e}")
-        st.error(f"Exception during pandas agent run: {e}")
+        logging.error(f"Exception during LLM invocation: {e}")
+        st.error(f"Exception during LLM invocation: {e}")
         return {"output": f"Error: {e}"}
 
 
@@ -756,7 +743,7 @@ def update_conversation_history(user_query, llm_response):
 def getting_hostname():
     # hostnames = get_hostnames()
     # hostnames.insert(0, "Choose a hostname")
-    hostnames = {"MyServer"}
+    hostnames = {"TESTSERVER"}
 
     return hostnames
 
@@ -785,42 +772,14 @@ if "total_cost" not in st.session_state:
 
 
 st.set_page_config(page_title="Data Analysis", page_icon="", layout="wide")
-st.title("POC for Data analysis", anchor=False)
-
-# Get list of available models from GenAIPlatformLLM
-model_list = GenAIPlatformLLM.get_available_model_ids()
-model_list = [model for model in model_list if model.startswith(("anthropic", "mistral", "openai", "meta"))]
-
-
-
-######## SIDEBAR ############
-with st.sidebar:
-    with st.expander("General options"):
-        st.caption('''**Choose a LLM to use**''')    
-        
-        model = st.selectbox("Select Model", options=model_list, key="model_selection")
-        #temperature = st.slider("Temperature", min_value=0.0, max_value=1.0, value=0.0, step=0.1, key="temperature_slider") 
-        temperature = 0.0
-    
-    st.divider()
-
-
-    with st.expander("CSV options"):
- 
-        st.caption('''**Choose CSV file properties**''')
-        delimiter = st.selectbox("delimiter", options=[",", ";"], key="delimiter_selection")
-        encoding = st.selectbox("Encoding", options=["utf8", "latin1"], key="encoding_selection")
-    
-    st.divider()
-
+st.title("AI DATA ANALYSIS", anchor=False)
 
 ######## MAIN PAGE ############
 
 # Tabs for Summarize and Daily Reports
 tab1, tab2 = st.tabs(["Data analyse", "Data analyse CSV"])
 
-llm = get_GenAI_llm("mistral.mixtral-8x7b-instruct-v0:1", model_kwargs = {"temperature": 0, "timeout": 5000})
-
+llm = get_openai_llm()
 
 ######## TAB1 ############
 with tab1:
@@ -828,7 +787,7 @@ with tab1:
     if 'data_tab1' not in st.session_state:
         st.session_state['data_tab1'] = None
 
-    st.header(f"AI Assistant for Data Science ({model})")
+    st.header(f"AI DATA ANALYSIS WITH TEST SERVER")
 
     with st.form("my_form"):
         
@@ -862,7 +821,7 @@ with tab1:
         #user_question_host = st.text_input("Which hostname are you interested in ?", key="hostname", max_chars=100 )
 
         # Submit button for the form
-        submitted = st.form_submit_button("Submit")
+        submitted = st.form_submit_button("PULL TEST SERVER")
             
     if submitted and start_date and end_date or st.session_state["datasets"] is not None:
     
@@ -1166,8 +1125,7 @@ with tab1:
 
 ######## TAB2 ############
 
-llm = get_GenAI_llm("mistral.mixtral-8x7b-instruct-v0:1", model_kwargs = {"temperature": 0, "timeout": 5000})
-
+llm = get_openai_llm
 friendly_errors = [
     "Oops! Something went wrong with the AI. Please try again.",
     "An unexpected error occurred with the AI. Please try again.",
@@ -1359,7 +1317,7 @@ def csvrun_agent_plot(query, llm, df):
         return {"output": f"Error: {e}"}
 
 with tab2:
-    st.header('AI Assistant for Data Science')
+    st.header('AI DATA ANALYSIS - UPLOAD YOUR OWN ORGANIZED DATA(CSV FORMAT)')
 
     st.divider()
     

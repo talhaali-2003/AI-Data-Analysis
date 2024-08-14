@@ -828,7 +828,7 @@ with tab1:
     if 'data_tab1' not in st.session_state:
         st.session_state['data_tab1'] = None
 
-    st.header(f"AI Assistant for Data Science ({model})")
+    st.header(f"AI Assistant for Data Science")
 
     with st.form("my_form"):
         
